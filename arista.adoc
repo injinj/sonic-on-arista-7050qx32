@@ -1,0 +1,664 @@
+Azure SONiC on the Arista 7050QX-32
+===================================
+:toc:
+
+Introduction
+------------
+
+I finally got to spend some quality time with my Arista 7050QX-32 and Azure
+SONiC.  SONiC, an open source network operating system sponsered by Microsoft.
+Out of the box without any configuration whatsoever, has BGP running on all of
+the interfaces. This is intended to allow Layer 3 native IP networking for each
+of the hosts and their containers, significantly simplifying networking without
+the typical Layer 2 container networking overlays.  After installing and
+configuring my hosts for BGP, I can get TCP performance at line rate between
+containers on different hosts without tuning much (although the MTU is 9000 and
+that helps a lot).
+
+--------------------------------------
+$ docker run -it --name mycentos centos bash
+[root@1e24805a735c /]# yum install iperf
+...
+
+[root@1e24805a735c]# iperf -c 192.168.120.2
+
+Client connecting to 192.168.120.2, TCP port 5001
+TCP window size: 2.00 MByte (default)
+
+[ 3] local 192.168.111.2 port 34042 connected with 192.168.120.2 port 5001
+[ ID] Interval Transfer Bandwidth
+[ 3] 0.0-10.0 sec 24.7 GBytes 21.2 Gbits/sec
+--------------------------------------
+
+The same CentOS Docker image is running on 192.168.120.2 in 'iperf' server mode.
+The bare metal here are dual e5-2670 machines using the awesome Intel s2600cp2
+board.
+
+--------------------------------------
+[root@1e24805a735c]# iperf -c 192.168.120.2 -P 4
+
+Client connecting to 192.168.120.2, TCP port 5001
+TCP window size: 2.00 MByte (default)
+
+[ 6] local 192.168.111.2 port 34050 connected with 192.168.120.2 port 5001
+[ 4] local 192.168.111.2 port 34046 connected with 192.168.120.2 port 5001
+[ 3] local 192.168.111.2 port 34044 connected with 192.168.120.2 port 5001
+[ 5] local 192.168.111.2 port 34048 connected with 192.168.120.2 port 5001
+[ ID] Interval Transfer Bandwidth
+[ 6] 0.0-10.0 sec 10.8 GBytes 9.27 Gbits/sec
+[ 4] 0.0-10.0 sec 10.6 GBytes 9.12 Gbits/sec
+[ 3] 0.0-10.0 sec 10.6 GBytes 9.13 Gbits/sec
+[ 5] 0.0-10.0 sec 11.2 GBytes 9.60 Gbits/sec
+[SUM] 0.0-10.0 sec 43.2 GBytes 37.1 Gbits/sec
+--------------------------------------
+
+Layer 3 networking has the advantage of fewer proprietary extensions that
+enable large cloud-like fabrics while allowing dynamic config via standard
+routing software and isolating tenants.  That's the sales pitch anyways, in
+buzzword lingo.  Used, it costs about as much as a decent Xeon and all the
+wiring cost a little more than gigabit network.
+
+Here are my experiences installing SONiC it.
+
+Installation
+------------
+
+Get into Aboot from a Serial Line
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+I recommend kermit, it makes me smile, because I'm usually booting some random
+hardware for the first time when I run it.  There was a blue Cisco style
+rollover cable that came with my switch.
+
+--------------------------------------
+root@host:~# kermit
+(/home/admin/) C-Kermit>set line /dev/ttyS0
+(/home/admin/) C-Kermit>set speed 9600
+(/home/admin/) C-Kermit>conn
+--------------------------------------
+
+Power the switch and hit ctrl-c at the prompt. You should have an Aboot shell at
+this point (which is a busybox env).
+
+Copy the SONiC Distribution for Arista
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Get a switch binary from here:
+
+https://github.com/Azure/SONiC/wiki/Supported-Devices-and-Platforms[
+Supported Devices and Platforms · Azure/SONiC Wiki · GitHub]
+
+I put this on a USB stick and inserted into the switch. Aboot will mount the
+USB as /mnt/usb1 and the flash as /mnt/flash.
+
+Backup the existing EOS software onto the USB, it will be erased by the SONiC
+install, there will be no backup saved on the switch.
+
+--------------------------------------
+Aboot:~# cd /mnt/flash
+Aboot:~# cp -a ./* /mnt/usb1/
+Aboot:~# cp /mnt/usb1/sonic-aboot-broadcom.swi .
+--------------------------------------
+
+Boot SONiC
+~~~~~~~~~~
+
+--------------------------------------
+Aboot:~# boot /mnt/flash/sonic-aboot-broadcom.swi
+--------------------------------------
+
+This erases the flash and installs SONiC onto it. You clear the flash again and
+boot EOS by following the Aboot instructions here:
+https://www.arista.com/en/um-eos/eos-section-6-5-aboot-shell#ww1121500[
+EOS Section 6.5: Aboot Shell - Arista]
+
+I used 'fullrecover' and 'boot EOS-*.swi' several times. The EOS, boot-config
+and startup-config can be restored from the USB drive, like this:
+
+--------------------------------------
+Abool# cd /mnt/flash
+Aboot# fullrecover
+All data on /mnt/flash will be erased; type "yes" and press Enter to proceed,
+or just press Enter to cancel: yes
+Erasing /mnt/flash
+Aboot# cp /mnt/usb1/EOS-4.14.5FX.3.swi .
+Aboot# cp /mnt/usb1/startup-config startup-config
+Aboot# cp /mnt/usb1/boot-config boot-config
+Aboot# reboot
+--------------------------------------
+
+Login to SONiC
+~~~~~~~~~~~~~~
+
+--------------------------------------
+arista login: admin
+Password: YourPaSsWoRd
+
+Last login: Tue Oct 31 04:10:18 UTC 2017 from 10.0.0.45 on pts/9
+Linux arista 3.16.0-4-amd64 #1 SMP Debian 3.16.36-1+deb8u2 (2015-12-19) x86_64
+You are on
+  ____   ___  _   _ _  ____
+ / ___| / _ \| \ | (_)/ ___|
+ \___ \| | | |  \| | | |
+  ___) | |_| | |\  | | |___
+ |____/ \___/|_| \_|_|\____|
+
+-- Software for Open Networking in the Cloud --
+
+Unauthorized access and/or use are prohibited.
+All access and/or use are subject to monitoring.
+
+Help:    http://azure.github.io/SONiC/
+admin@arista:~$ sudo -i bash
+root@arista:~# 
+--------------------------------------
+
+The eth0 device is the gigabit management interface, it will start 'dhclient'
+to get the address. I usually setup my /etc/dhcp/dhcpd.conf to hand out
+addresses based on the MAC address (use 'ip addr show eth0' in the serial line
+tty).
+
+--------------------------------------
+root@router:~# grep 'host arista' -A 4 /etc/dhcp/dhcpd.conf
+host arista {
+  option host-name "arista";
+  hardware ethernet 44:4c:a8:12:87:c6;
+  fixed-address 10.3.2.63;
+}
+--------------------------------------
+
+After eth0 is configured, you can 'ssh admin@10.3.2.63' and skip the slow tty.
+
+Fix the Loud Fans
+~~~~~~~~~~~~~~~~~
+
+SONiC does not dynamically adjust the fans on this switch. It puts them at
+high speed, so it will be very annoying if the switch is anywhere close to you.
+You can read the sensors and adjust the fans manually.
+
+--------------------------------------
+root@arista:~# echo 120 > /sys/devices/platform/sb800-fans/hwmon/hwmon1/pwm1
+root@arista:~# echo 120 > /sys/devices/platform/sb800-fans/hwmon/hwmon1/pwm2
+root@arista:~# echo 120 > /sys/devices/platform/sb800-fans/hwmon/hwmon1/pwm3
+root@arista:~# echo 120 > /sys/devices/platform/sb800-fans/hwmon/hwmon1/pwm4
+root@arista:~# cat /sys/devices/platform/sb800-fans/hwmon/hwmon1/fan1_input
+14489
+--------------------------------------
+
+The command 'show' is the cli way of examining the state of the switch:
+
+--------------------------------------
+root@arista:~# show environment
+Command: sudo sensors
+k10temp-pci-00c3
+Adapter: PCI adapter
+Cpu temp sensor: +36.0 C (high = +70.0 C)
+
+fans-isa-0000
+Adapter: ISA adapter
+fan1: 12611 RPM
+fan2: 12611 RPM
+fan3: 12611 RPM
+fan4: 12381 RPM
+--------------------------------------
+
+There is a 'fancontrol' daemon, but it needs configuration via 'pwmconfig'.
+This configuration needs to be done in the pmon container.
+
+--------------------------------------
+root@arista:~# docker exec -it pmon bash
+root@arista:~# pwmconfig
+--------------------------------------
+
+The 'pwmconfig' will allow you to choose which temp sensor devices control
+which fans. The 'fancontrol' daemon doesn't quite agree with 'pwmconfig' for
+some temp sensors, so I used the CPU temperature to control the fan speed,
+since it is the highest value.
+
+Test it:
+
+--------------------------------------
+root@arista:~# VERBOSE=1 /etc/init.d/fancontrol start
+--------------------------------------
+
+It should start automatically on boot by 'pmon.sh' via 'systemd' when it exists
+in the platform config
+/usr/share/sonic/device/x86_64-arista_7050_qx32/fancontrol.  Exit the pmon
+container and copy the 'fancontrol' file to that location.
+
+--------------------------------------
+root@arista:~# docker cp pmon:/etc/fancontrol /usr/share/sonic/device/x86_64-arista_7050_qx32/fancontrol
+root@arista:~# cat /usr/share/sonic/device/x86_64-arista_7050_qx32/fancontrol
+INTERVAL=10
+DEVPATH=hwmon0=devices/pci0000:00/0000:00:18.3 hwmon1=devices/platform/sb800-fans
+DEVNAME=hwmon0=k10temp hwmon1=fans
+FCTEMPS=hwmon1/pwm4=hwmon0/device/temp1_input hwmon1/pwm3=hwmon0/device/temp1_input hwmon1/pwm2=hwmon0/device/temp1_input hwmon1/pwm1=hwmon0/device/temp1_input
+FCFANS=hwmon1/pwm4=hwmon1/fan4_input hwmon1/pwm3=hwmon1/fan3_input hwmon1/pwm2=hwmon1/fan2_input hwmon1/pwm1=hwmon1/fan1_input
+MINTEMP=hwmon1/pwm4=20 hwmon1/pwm3=20 hwmon1/pwm2=20 hwmon1/pwm1=20
+MAXTEMP=hwmon1/pwm4=60 hwmon1/pwm3=60 hwmon1/pwm2=60 hwmon1/pwm1=60
+MINSTART=hwmon1/pwm4=150 hwmon1/pwm3=150 hwmon1/pwm2=150 hwmon1/pwm1=150
+MINSTOP=hwmon1/pwm4=0 hwmon1/pwm3=0 hwmon1/pwm2=0 hwmon1/pwm1=0
+--------------------------------------
+
+Exploring SONiC
+~~~~~~~~~~~~~~~
+
+The architecture of SONiC is described here: 
+https://github.com/Azure/SONiC/wiki/Architecture[Architecture · Azure/SONiC Wiki · GitHub]
+
+It is a collection of daemons which use a Redis database to communicate and
+persist configuration. You can use 'redis-cli' to examine the database and the
+activity of the daemons. For example, this shows what the daemons are doing:
+
+--------------------------------------
+root@arista:~# redis-cli psubscribe '*'
+1) "psubscribe"
+2) "*"
+3) (integer) 1
+1) "pmessage"
+2) "*"
+3) "__keyspace@2__:COUNTERS:1000000000002"
+4) "hset"
+1) "pmessage"
+2) "*"
+3) "__keyevent@2__:hset"
+4) "COUNTERS:1000000000002"
+1) "pmessage"
+2) "*"
+--------------------------------------
+
+The file /etc/sonic/config_db.json contains the startup configuration. The
+Redis database is populated from this and the daemons configure the switch by
+using Redis operations. OpenSwitch also has foundations for a Redis based
+configuration, but it seems a bit behind, whereas Microsoft is building a new
+SONiC version continuously here:
+https://sonic-jenkins.westus.cloudapp.azure.com/job/broadcom/job/buildimage-brcm-aboot-all/lastSuccessfulBuild/artifact/target/[Jenkins buildimage-brcm-aboot-all].
+
+The daemons in SONiC are inside Docker containers. For example, the BGP
+container looks like this:
+
+--------------------------------------
+root@arista:~# docker ps --format 'table {{.Names}}\t{{.Command}}\t{{.Image}}'
+NAMES               COMMAND                  IMAGE
+snmp                "/usr/bin/supervisord"   docker-snmp-sv2:latest
+dhcp_relay          "/usr/bin/docker_init"   docker-dhcp-relay:latest
+syncd               "/usr/bin/supervisord"   docker-syncd-brcm:latest
+swss                "/usr/bin/supervisord"   docker-orchagent-brcm:latest
+teamd               "/usr/bin/supervisord"   docker-teamd:latest
+bgp                 "/usr/bin/supervisord"   docker-fpm-quagga:latest
+lldp                "/usr/bin/supervisord"   docker-lldp-sv2:latest
+pmon                "/usr/bin/supervisord"   docker-platform-monitor:latest
+database            "/usr/bin/supervisord"   docker-database:latest
+
+root@arista:~# docker exec -it bgp bash
+root@arista:~# ps ax
+PID TTY STAT TIME COMMAND
+1 ? Ss+ 2:16 /usr/bin/python /usr/bin/supervisord
+29 ? S 0:00 python /usr/bin/bgpcfgd
+33 ? Sl 0:03 /usr/sbin/rsyslogd -n
+38 ? S 0:02 /usr/lib/quagga/zebra -A 127.0.0.1
+40 ? S 1:26 /usr/lib/quagga/bgpd -A 127.0.0.1 -F
+42 ? Sl 0:00 fpmsyncd
+180 ? Ss 0:00 bash
+184 ? R+ 0:00 ps ax
+
+root@arista:~# head -30 /etc/quagga/bgpd.conf
+!
+! =========== Managed by sonic-cfggen DO NOT edit manually! ====================
+! generated by templates/quagga/bgpd.conf.j2 with config DB data
+! file: bgpd.conf
+!
+!
+hostname switch1
+password zebra
+log syslog informational
+log facility local4
+! enable password !
+!
+! bgp multiple-instance
+!
+route-map FROM_BGP_SPEAKER_V4 permit 10
+!
+route-map TO_BGP_SPEAKER_V4 deny 10
+!
+router bgp 65100
+  bgp log-neighbor-changes
+  bgp bestpath as-path multipath-relax
+  no bgp default ipv4-unicast
+  bgp router-id 10.1.0.32
+  network 10.1.0.32/32
+--------------------------------------
+
+Configuration
+-------------
+
+Set up the IP Addresses
+~~~~~~~~~~~~~~~~~~~~~~~
+
+As it is installed in build #270, SONiC defines each of the 32 ports with a
+with an EthernetX device and a 10.0.0.Y address on port N range 1->32, where
+X = (N-1) * 4 and Y = (N-1) * 2.  These are the IP addresses assigned to ports
+17 and 18:
+
+--------------------------------------
+root@arista:~# ip addr show | egrep 'inet.*Ethernet6[48]'
+inet 10.0.0.32/31 brd 255.255.255.255 scope global Ethernet64
+inet 10.0.0.34/31 brd 255.255.255.255 scope global Ethernet68
+--------------------------------------
+
+The first 16 ports use Internal BGP, the second 16 ports are External BGP.
+Since External BGP distributes the routes across the cluster and I am not
+connecting BGP to the Internet, I used the ports 17->32.  I plan on creating a
+Layer 2 Lans with the first 16 ports.
+
+The addresses assigned to the hosts are
+
+* host 10.0.0.33/31 -> switch port 17 10.0.0.32/31
+* host 10.0.0.35/31 -> switch port 18 10.0.0.34/31
+
+Since the layer 2 network set up using this config is confined to the link
+between the switch and the port, the host has to route through the switch in
+order to connect with the other ports otherwise any IP address other than the
+link pair will try to route to the wrong network. I did this by setting up my
+router as the default-gateway, which propagates default route through the
+switch to the hosts.  My initial 6 host config looks like this:
+
+* CentOS 7 Server 10.0.0.33/31 -> switch port 17
+* Fedora 26 Workstation 10.0.0.37/31 -> switch port 19
+* CentOS 7 Server 10.0.0.41/31 -> switch port 21
+* Fedora 26 Workstation 10.0.0.45/31 -> switch port 23
+* Fedora 26 Router 10.0.0.49/31 -> switch port 25
+* CentOS 7 Server 10.0.0.53/31 -> switch port 27
+
+Install 'quagga' and start 'zebra'.
+
+--------------------------------------
+root@router:~# yum install quagga
+root@router:~# systemctl start zebra
+--------------------------------------
+
+My 40gbe devices are named `fo0` and `fo1`.
+
+--------------------------------------
+root@router:~# vtysh
+router# config term
+router(config)# log file /var/log/quagga/quagga.log
+router(config)# interface fo0
+router(config-if)# ip address 10.0.0.49/31
+router(config-if)# no shutdown
+router(config-if)# end
+router# write
+Building Configuration...
+Configuration saved to /etc/quagga/zebra.conf
+--------------------------------------
+
+You should be able to 'ping' from the host to 10.0.0.48, which is port 25 on
+the switch, in this case, my Fedora 26 Router.
+
+--------------------------------------
+root@router:~# ping -c 3 10.0.0.48
+PING 10.0.0.48 (10.0.0.48) 56(84) bytes of data.
+64 bytes from 10.0.0.48: icmp_seq=1 ttl=64 time=0.316 ms
+64 bytes from 10.0.0.48: icmp_seq=2 ttl=64 time=0.188 ms
+64 bytes from 10.0.0.48: icmp_seq=3 ttl=64 time=0.156 ms
+
+--- 10.0.0.48 ping statistics ---
+3 packets transmitted, 3 received, 0% packet loss, time 1999ms
+rtt min/avg/max/mdev = 0.059/0.062/0.066/0.003 ms
+--------------------------------------
+
+One other thing I did on the router was route the 10.0.0.0/26 range through the
+switch:
+
+--------------------------------------
+root@router:~# vtysh
+router# config term
+router(config)# ip route 10.0.0.0/26 fo0
+router(config-if)# end
+router# write
+--------------------------------------
+
+Repeat the above for each host connected, except for the last line.
+
+Set up BGP Routing
+~~~~~~~~~~~~~~~~~~
+
+Each of my hosts has a docker0 device on it using a unique IP address range.
+BGP is going to distribute the routes for the docker0 brige across the cluster.
+This is the Docker dameon config file that causes 'docker' to create a
+default bridge at 192.168.37.1/24.
+
+--------------------------------------
+root@host:~# cat /etc/docker/daemon.json
+{
+    "dns": ["192.168.255.1"],
+    "iptables": false,
+    "ip-forward": false,
+    "ip-masq": false,
+    "storage-driver": "btrfs",
+    "bip": "192.168.37.1/24",
+    "fixed-cidr": "192.168.37.0/24",
+    "mtu": 1500
+}
+root@host:~# systemctl start docker
+root@host:~# brctl show
+bridge name     bridge id               STP enabled     interfaces
+docker0         8000.0242deb9f0e5       no
+root@host:~# ip -4 addr show dev docker0
+8: docker0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN 
+    inet 192.168.37.1/24 scope global docker0
+       valid_lft forever preferred_lft forever
+--------------------------------------
+
+The DNS entry is a caching named on the router. I set up a loopback device with
+this IP address and distributed it with BGP.
+
+--------------------------------------
+root@router:~# cat /etc/sysconfig/network-scripts/ifcfg-lo:1
+DEVICE=lo:1
+IPADDR=192.168.255.1
+NETMASK=255.255.255.0
+NETWORK=192.168.255.0
+BROADCAST=192.168.255.255
+ONBOOT=yes
+--------------------------------------
+
+Here is the /etc/quagga/bgpd.conf for the above Docker bridge on the
+CentOS 7 server plugged into port 21.
+
+--------------------------------------
+root@host:~# cat /etc/quagga/bgpd.conf
+hostname myhost
+password zebra
+log file /var/log/quagga/bgp.log
+
+router bgp 64005
+  bgp router-id 10.0.0.41
+  network 192.168.37.0/24
+  neighbor 10.0.0.40 remote-as 65100
+--------------------------------------
+
+Start 'bgpd' to communicate with the BGP running on switch.
+
+--------------------------------------
+root@host:~# systemctl start bgpd
+--------------------------------------
+
+The 64005 AS number above is unique for each port from 17 -> 32. These are
+configured be on the switch in the BGP container in /etc/quagga/bgpd.conf via
+the Redis database.
+
+* port 17 = AS 64001 to switch AS 65100
+* port 19 = AS 64003 to switch AS 65100
+* port 21 = AS 64005 to switch AS 65100
+* port 23 = AS 64007 to switch AS 65100
+* port 25 = AS 64009 to switch AS 65100
+* port 27 = AS 64011 to switch AS 65100
+
+Sinced the above host is in port 21, the AS number is 64005 (AS is a BGP
+acronym for
+https://en.wikipedia.org/wiki/Autonomous_system_(Internet)[Autonomous system]).
+After starting 'bgpd' on each of the hosts, you should see the routes populated
+by BGP with the protocol *zebra*.  On the switch it shows this:
+
+--------------------------------------
+root@arista:/# ip route show | grep zebra
+ip route show | grep zebra
+default via 10.0.0.49 dev Ethernet96  proto zebra  src 10.1.0.32 
+192.168.74.0/24 via 10.0.0.33 dev Ethernet64  proto zebra  src 10.1.0.32 
+192.168.111.0/24 via 10.0.0.37 dev Ethernet72  proto zebra  src 10.1.0.32 
+192.168.37.0/24 via 10.0.0.41 dev Ethernet80  proto zebra  src 10.1.0.32 
+192.168.120.0/24 via 10.0.0.45 dev Ethernet88  proto zebra  src 10.1.0.32 
+192.168.255.0/24 via 10.0.0.49 dev Ethernet96  proto zebra  src 10.1.0.32 
+192.168.66.0/24 via 10.0.0.51 dev Ethernet96  proto zebra  src 10.1.0.32 
+--------------------------------------
+
+All the hosts are set up the same, except for the router.  The router has this
+in the /etc/quagga/bgpd.conf:
+
+--------------------------------------
+hostname router
+password zebra
+log file /var/log/quagga/bgp.log
+
+router bgp 64009
+  bgp router-id 10.0.0.49
+  network 192.168.255.0/24
+  neighbor 10.0.0.48 remote-as 65100
+  neighbor 10.0.0.48 default-originate
+--------------------------------------
+
+Note the "default-originate" line. This propagates the default route to the
+hosts and the switch.
+
+I also block the BGP port from the internet side:
+
+--------------------------------------
+root@host:~# iptables -A INPUT -i te0 -p udp -m udp --dport 179 -j DROP
+root@host:~# iptables -A INPUT -i te0 -p tcp -m tcp --dport 179 -j DROP
+--------------------------------------
+
+Set up Layer 2 Vlans
+~~~~~~~~~~~~~~~~~~~~
+
+In order to use a port in normal ethernet mode, a Vlan has to be created and
+ports need to be added to it.  There is no DEFAULT_VLAN.
+
+The location of the SONiC config file is on the switch here:
+/etc/sonic/sonic_db.json
+
+When the switch boots, it loads this into the Redis database.  The switch
+daemons that are running in Docker monitor the database through pub/sub
+subscriptions and update the operating state.  The VLAN part that becomes the
+Debian `ifupdown` configuration uses a Python templating language called
+http://jinja.pocoo.org/docs/2.9/[Jinja2].  
+
+To add a Vlan, there are two components of the json file that need to be
+updated, the "VLAN" field and the "VLAN_INTERFACE" field.  The following
+is the first 10 ports and the last two ports (1->10, 31->32) configured for
+the Vlan1000.  I am using the 10.1.1.0/24 network for this VLAN.
+
+--------------------------------------
+    "VLAN": {
+        "Vlan1000": {
+            "members": [
+                "Ethernet0",
+                "Ethernet4",
+                "Ethernet8",
+                "Ethernet12",
+                "Ethernet16",
+                "Ethernet20",
+                "Ethernet24",
+                "Ethernet28",
+                "Ethernet32",
+                "Ethernet36",
+                "Ethernet120",
+                "Ethernet124"
+            ],
+            "vlanid": "1000"
+        }
+    },
+    "VLAN_INTERFACE": {
+        "Vlan1000|10.1.1.1/24": {}
+    },
+--------------------------------------
+
+The template https://github.com/Azure/sonic-buildimage/blob/master/files/image_config/interfaces/interfaces.j2[interfaces.j2] generates
+the file /etc/network/interfaces from the above json, which looks like this:
+
+--------------------------------------
+root@arista:/# tail -15 /etc/network/interfaces
+allow-hotplug Ethernet124
+#
+iface Ethernet124 inet manual
+    pre-up ifconfig Ethernet124 up mtu 9100
+    post-up brctl addif Vlan1000 Ethernet124 || true
+    post-down ifconfig Ethernet124 down
+#
+# Vlan interfaces
+auto Vlan1000
+iface Vlan1000 inet static
+    bridge_ports none
+    hwaddress ether 44:4c:a8:12:87:c6
+    address 10.1.1.1
+    netmask 255.255.255.0
+#
+--------------------------------------
+
+After startup, you can verify that the ports configured are indeed in the
+Vlan1000 bridge:
+
+--------------------------------------
+root@arista:/# brctl show
+bridge name     bridge id               STP enabled     interfaces
+Vlan1000        8000.444ca81287c6       no              Ethernet0
+                                                        Ethernet12
+                                                        Ethernet120
+                                                        Ethernet124
+                                                        Ethernet16
+                                                        Ethernet20
+                                                        Ethernet24
+                                                        Ethernet28
+                                                        Ethernet32
+                                                        Ethernet36
+                                                        Ethernet4
+                                                        Ethernet8
+docker0         8000.0242d26920e5       no
+--------------------------------------
+
+I also removed these ports from the other sections of the configuration file,
+specifically the "BGP_NEIGHBOR", "DEVICE_NEIGHBOR", and "INTERFACE".
+
+Since my router is populating the default route for the BGP network, I also
+set the management address to be static, otherwise the DHCP default route
+overrides the BGP.  This configured in the "MGMT_INTERFACE" section of
+the json file:
+
+--------------------------------------
+    "MGMT_INTERFACE": {
+        "eth0|10.3.2.63/24": {}
+    },
+--------------------------------------
+
+[appendix]
+Config Files
+------------
+My SONiC config file in its entirety:
+
+link:config_db.json[/etc/sonic/config_db.json]
+
+link:fancontrol[/usr/share/sonic/device/x86_64-arista_7050_qx32/fancontrol]
+
+Config files for my Fedora 26 router on port 25:
+
+link:zebra.conf[/etc/quagga/zebra.conf]
+
+link:bgpd.conf[/etc/quagga/bgpd.conf]
+
+Config files for my CentOS 7 server on port 21:
+
+link:server-zebra.conf[/etc/quagga/zebra.conf]
+
+link:server-bgpd.conf[/etc/quagga/bgpd.conf]
+
+link:daemon.json[/etc/docker/daemon.json]
